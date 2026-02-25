@@ -65,6 +65,9 @@ def powder_summary() -> str:
         + "\n\n(Next: I’ll parse the real lift table so this becomes accurate.)"
     )
 
+@app.get("/api/health")
+def health():
+    return {"ok": True, "service": "liftwatch"}
 
 # --- Discord interactions endpoint ---
 @app.post("/api/interactions")
