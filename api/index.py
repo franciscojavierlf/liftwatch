@@ -70,7 +70,7 @@ def health():
     return {"ok": True, "service": "liftwatch"}
 
 # --- Discord interactions endpoint ---
-@app.post("/api/discord")
+@app.post("/api/interactions")
 async def interactions(request: Request):
     raw_body = await request.body()
     signature = request.headers.get("X-Signature-Ed25519", "")
