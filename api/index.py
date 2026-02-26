@@ -13,6 +13,7 @@ app = FastAPI()
 DISCORD_PUBLIC_KEY = os.environ.get("DISCORD_PUBLIC_KEY", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 REDIS_URL = os.environ.get("REDIS_URL", "")
+CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
 LAST_UPDATED_KEY = "liftwatch:last_updated"
 NISEKO_STATUS_URL = "https://www.niseko.ne.jp/en/niseko-lift-status/"
@@ -101,7 +102,12 @@ def health():
 
 # --- CRON ENDPOINT ---
 @app.get("/api/cron")
-def cron_check():
+def cron_check(request: Request):
+
+    token = request.headers.get("X-Cron-Secret", "")
+    if not CRON_SECRET or token != CRON_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         resp = requests.get(NISEKO_STATUS_URL, timeout=15)
         resp.raise_for_status()

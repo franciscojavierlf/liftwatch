@@ -2,9 +2,8 @@ name: liftwatch cron
 
 on:
   schedule:
-    # Every 5 min during 05:00–08:59 JST (20:00–23:59 UTC)
+    # 05:00–19:00 JST window (UTC conversion)
     - cron: "*/5 20-23 * * *"
-    # Every 5 min during 09:00–19:00 JST (00:00–10:00 UTC)
     - cron: "*/5 0-10 * * *"
   workflow_dispatch:
 
@@ -13,5 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Call liftwatch cron endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -f "https://liftwatch.vercel.app/api/cron"
+          curl -sS -f \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            "https://liftwatch.vercel.app/api/cron"
