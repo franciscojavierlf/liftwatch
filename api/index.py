@@ -1,14 +1,66 @@
 import os
+import re
 import json
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, HTTPException
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
 
 app = FastAPI()
 
 DISCORD_PUBLIC_KEY = os.environ.get("DISCORD_PUBLIC_KEY", "")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+LAST_UPDATED_KEY = "liftwatch:last_updated"
+NISEKO_STATUS_URL = "https://www.niseko.ne.jp/en/niseko-lift-status/"
+
+# --- Your Niseko scraping / heuristics ---
+NISEKO_STATUS_URL = "https://www.niseko.ne.jp/en/niseko-lift-status/"
+
+# A pragmatic "powder-ish" lift list you can tune with the boys
+POWDER_LIFTS_KEYWORDS = [
+    "King", "Ace", "Gondola", "Hanazono", "Annupuri", "Village"
+]
+
+def upstash_get(key: str) -> str | None:
+    if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+        return None
+    r = requests.get(
+        f"{UPSTASH_REDIS_REST_URL}/get/{key}",
+        headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"},
+        timeout=10,
+    )
+    r.raise_for_status()
+    data = r.json()
+    return data.get("result")
+
+def upstash_set(key: str, value: str) -> None:
+    r = requests.post(
+        f"{UPSTASH_REDIS_REST_URL}/set/{key}/{requests.utils.quote(value, safe='')}",
+        headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"},
+        timeout=10,
+    )
+    r.raise_for_status()
+
+def discord_post(content: str) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        raise RuntimeError("DISCORD_WEBHOOK_URL not set")
+    r = requests.post(DISCORD_WEBHOOK_URL, json={"content": content}, timeout=10)
+    r.raise_for_status()
+
+def extract_last_updated(html: str) -> str | None:
+    # MVP: find something like "Last updated" in visible text
+    # We'll refine once we inspect the exact page string.
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    m = re.search(r"(Last\s*updated[^.:\n]*[:\s]\s*[^|]+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return None
 
 # --- Discord signature verification (required) ---
 def verify_discord_request(raw_body: bytes, signature: str, timestamp: str) -> bool:
@@ -18,15 +70,6 @@ def verify_discord_request(raw_body: bytes, signature: str, timestamp: str) -> b
         return True
     except (BadSignatureError, ValueError, TypeError):
         return False
-
-
-# --- Your Niseko scraping / heuristics ---
-NISEKO_STATUS_URL = "https://www.niseko.ne.jp/en/niseko-lift-status/"
-
-# A pragmatic "powder-ish" lift list you can tune with the boys
-POWDER_LIFTS_KEYWORDS = [
-    "King", "Ace", "Gondola", "Hanazono", "Annupuri", "Village"
-]
 
 def fetch_lift_status_text() -> str:
     """
@@ -68,6 +111,29 @@ def powder_summary() -> str:
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "liftwatch"}
+
+@app.get("/api/cron")
+def cron_check():
+    if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
+        raise HTTPException(status_code=500, detail="Upstash env vars missing")
+
+    r = requests.get(NISEKO_STATUS_URL, timeout=15)
+    r.raise_for_status()
+
+    last_updated = extract_last_updated(r.text)
+    if not last_updated:
+        # fallback so we at least know it ran
+        last_updated = "Last updated: (not detected) — page fetched OK"
+
+    prev = upstash_get(LAST_UPDATED_KEY)
+
+    if prev != last_updated:
+        upstash_set(LAST_UPDATED_KEY, last_updated)
+        # Keep message short. Discord content limit is 2000 chars.  [oai_citation:2‡Qiita](https://qiita.com/Eai/items/1165d08dce9f183eac74?utm_source=chatgpt.com)
+        discord_post(f"🚨 **Niseko lift status updated**\n{last_updated}\n{NISEKO_STATUS_URL}")
+        return {"changed": True, "last_updated": last_updated, "prev": prev}
+
+    return {"changed": False, "last_updated": last_updated}
 
 # --- Discord interactions endpoint ---
 @app.post("/api/interactions")
