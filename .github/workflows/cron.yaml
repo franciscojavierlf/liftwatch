@@ -1,0 +1,17 @@
+name: liftwatch cron
+
+on:
+  schedule:
+    # Every 5 min during 05:00–08:59 JST (20:00–23:59 UTC)
+    - cron: "*/5 20-23 * * *"
+    # Every 5 min during 09:00–19:00 JST (00:00–10:00 UTC)
+    - cron: "*/5 0-10 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call liftwatch cron endpoint
+        run: |
+          curl -sS -f "https://liftwatch.vercel.app/api/cron"
