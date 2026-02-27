@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-
-import httpx
 
 from liftwatch.ski_area import SkiArea
 from liftwatch.fetcher.facility import LiftFacility, fetch_latest_facility_async

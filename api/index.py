@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from typing import Optional
 
 import redis
 from fastapi import FastAPI, Request, Response, HTTPException
 
-from liftwatch.snapshot import fetch_snapshot_async
+from liftwatch.fetcher.fetcher import fetch_snapshot_async
 from liftwatch.ski_area import SkiArea
 from liftwatch.discord import discord_post, verify_discord_request
 from liftwatch.fetcher.weather import WeatherPoint, ResortWeather
@@ -22,11 +23,19 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "")
 # --- Redis connection ---
 r = redis.Redis.from_url(REDIS_URL) if REDIS_URL else None
 
+def _require_bearer_auth(request: Request) -> None:
+    auth = request.headers.get("Authorization", "")
 
-@app.get("/api/health")
-def health():
-    return {"ok": True, "service": "liftwatch"}
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
 
+    token = auth.split(" ", 1)[1].strip()
+
+    if not CRON_SECRET:
+        raise HTTPException(status_code=500, detail="CRON_SECRET not configured")
+
+    if not secrets.compare_digest(token, CRON_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 def _b2s(x: object) -> Optional[str]:
     """Redis returns bytes; normalize to str."""
@@ -44,12 +53,14 @@ def _is_newer(new: Optional[str], old: Optional[str]) -> bool:
         return True
     return new > old  # ISO timestamps compare lexicographically OK
 
+@app.get("/api/health")
+def health():
+    return {"ok": True, "service": "liftwatch"}
+
 # --- CRON ENDPOINT ---
 @app.get("/api/cron")
 async def cron_check(request: Request):
-    token = request.headers.get("X-Cron-Secret", "")
-    if not CRON_SECRET or token != CRON_SECRET:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_bearer_auth(request)
 
     snap = await fetch_snapshot_async()
 
