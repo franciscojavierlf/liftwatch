@@ -56,27 +56,24 @@ async def cron_check(request: Request):
     if r is None:
         raise HTTPException(status_code=500, detail="REDIS_URL not configured")
 
-    print("redis ready")
+    results: dict[str, dict[str, bool]] = {}
+
     for area in SkiArea:
+        area_id = str(int(area))
+        results[area_id] = {"lifts": False, "weather": False}
+
         # --- LIFTS ---
         lifts: list[LiftFacility] = snap.lifts_by_area.get(area, [])
         lifts_updated = max((lf.update_date for lf in lifts if lf.update_date), default=None)
 
-        print(f"before redis in {area}")
         key_l = f"lw:last_posted:lifts:{int(area)}"
         last_posted_l = _b2s(r.get(key_l))
-        print(last_posted_l)
 
         if lifts_updated and _is_newer(lifts_updated, last_posted_l):
-            print("updating lifts")
             msg = fmt_lifts(area, lifts, updated=lifts_updated)
-            print(msg)
             discord_post(msg)
-            print("posted lifts")
             r.set(key_l, lifts_updated)
-            print("saved key")
-
-        print("now with weather")
+            results[area_id]["lifts"] = True
 
         # --- WEATHER ---
         w: ResortWeather | None = snap.weather_by_area.get(area)
@@ -89,9 +86,9 @@ async def cron_check(request: Request):
             msg = fmt_weather(area, w)
             discord_post(msg)
             r.set(key_w, weather_updated)
-            print("posted weather")
+            results[area_id]["weather"] = True
 
-    return {"ok": True}
+    return {"ok": True, "updated": results}
 
 # --- Discord interactions endpoint ---
 @app.post("/api/interactions")
