@@ -67,7 +67,7 @@ def fmt_lifts(area: SkiArea, lifts: List[LiftFacility], *, updated: Optional[str
     not_ok = [l for l in lifts if l.status.upper() != "OPERATING"]
 
     lines = [
-        f"**{area.emoji} {area.label} — Lift update**",
+        f"**{area} — Lift update**",
         f"Updated: `{updated or 'unknown'}`",
         f"Operating: **{len(ops)}** / {len(lifts)}",
     ]
@@ -95,7 +95,7 @@ def fmt_weather(area: SkiArea, w: ResortWeather) -> str:
         return f"{temp}, snow {snow}{diff}, wind {wind}, wx {wx}"
 
     lines = [
-        f"**{area.emoji} {area.label} — Weather update**",
+        f"**{area} — Weather update**",
         f"Updated: `{w.last_updated or 'unknown'}`",
         f"- Peak: {one(w.peak)}",
         f"- Base: {one(w.base)}",
