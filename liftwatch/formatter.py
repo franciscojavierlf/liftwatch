@@ -10,7 +10,27 @@ from liftwatch.fetcher.weather import ResortWeather, WeatherPoint
 
 JST = timezone(timedelta(hours=9))
 
-def format_timestamp_jst(iso_utc: Optional[str]) -> str:
+STATUS_DISPLAY: dict[str, tuple[str, str]] = {
+    "OPERATING": ("✅", "Operating"),
+    "OPERATING_SLOWED": ("🐢", "Operating (slow)"),
+    "STANDBY": ("⏳", "Standby"),
+    "OPERATION_TEMPORARILY_SUSPENDED": ("⛔", "Temporarily suspended"),
+    "SUSPENDED": ("❌", "Suspended"),
+    "SUSPENDED_CLOSED": ("❌", "Closed"),
+    "CLOSED": ("❌", "Closed"),
+}
+
+def _format_lift_status(raw_status: object) -> str:
+    status = str(raw_status or "").strip().upper()
+
+    icon, text = STATUS_DISPLAY.get(
+        status,
+        ("⚠️", status.replace("_", " ").title())  # fallback
+    )
+
+    return f"{icon} {text}"
+
+def _format_timestamp_jst(iso_utc: Optional[str]) -> str:
     if not iso_utc:
         return "unknown"
 
@@ -37,11 +57,11 @@ def format_timestamp_jst(iso_utc: Optional[str]) -> str:
 
 # ---------- Generic cleaning ----------
 
-def normalize_text(value: object) -> str:
+def _normalize_text(value: object) -> str:
     return str(value or "").strip()
 
-def normalize_upper(value: object) -> str:
-    return normalize_text(value).upper()
+def _normalize_upper(value: object) -> str:
+    return _normalize_text(value).upper()
 
 
 # ---------- Powder logic ----------
@@ -55,7 +75,7 @@ def has_powder_signal(point: WeatherPoint | None) -> bool:
     if point.snow_diff_cm is not None and point.snow_diff_cm > 0:
         return True
 
-    snow_state = normalize_text(getattr(point, "snow_state", None))
+    snow_state = _normalize_text(getattr(point, "snow_state", None))
     return any(word in snow_state for word in POWDER_KEYWORDS)
 
 
@@ -78,10 +98,10 @@ def format_weather_point_compact(point: WeatherPoint | None) -> str:
         sign = "+" if point.snow_diff_cm > 0 else ""
         delta = f" (Δ{sign}{point.snow_diff_cm}cm)"
 
-    snow_state = normalize_text(getattr(point, "snow_state", None))
-    course_state = normalize_text(getattr(point, "cource_state", None))
-    wind = normalize_text(getattr(point, "wind", None))
-    weather = normalize_text(getattr(point, "weather", None))
+    snow_state = _normalize_text(getattr(point, "snow_state", None))
+    course_state = _normalize_text(getattr(point, "cource_state", None))
+    wind = _normalize_text(getattr(point, "wind", None))
+    weather = _normalize_text(getattr(point, "weather", None))
 
     parts: list[str] = [f"{temperature} • ❄️ {snow}{delta}"]
     if snow_state:
@@ -99,7 +119,7 @@ def format_weather_point_compact(point: WeatherPoint | None) -> str:
 def fmt_weather(area: SkiArea, resort_weather: ResortWeather) -> str:
     return "\n".join([
         f"**{area.label} — Weather • ✅ UPDATED**",
-        f"🕒 {format_timestamp_jst(resort_weather.last_updated)}",
+        f"🕒 {_format_timestamp_jst(resort_weather.last_updated)}",
         f"🏔️ Peak: {format_weather_point_compact(resort_weather.peak)}",
         f"🏡 Base: {format_weather_point_compact(resort_weather.base)}",
     ])
@@ -108,7 +128,7 @@ def fmt_weather(area: SkiArea, resort_weather: ResortWeather) -> str:
 # ---------- Lift formatting ----------
 
 def lift_status_icon(status: object) -> str:
-    s = normalize_upper(status)
+    s = _normalize_upper(status)
     if s == "OPERATING":
         return "✅"
     if "SUSPEND" in s:
@@ -120,11 +140,11 @@ def lift_status_icon(status: object) -> str:
     return "⚠️"
 
 def is_operating(lift: LiftFacility) -> bool:
-    return normalize_upper(getattr(lift, "status", None)) == "OPERATING"
+    return _normalize_upper(getattr(lift, "status", None)) == "OPERATING"
 
 def lift_time_window(lift: LiftFacility) -> str:
-    start = normalize_text(getattr(lift, "start_time", None))
-    end = normalize_text(getattr(lift, "end_time", None))
+    start = _normalize_text(getattr(lift, "start_time", None))
+    end = _normalize_text(getattr(lift, "end_time", None))
     if start and end:
         return f" ({start}-{end})"
     return ""
@@ -135,22 +155,23 @@ def fmt_lifts(area: SkiArea, lifts: List[LiftFacility], updated: str | None) -> 
 
     non_operating = [
         lift for lift in lifts
-        if normalize_upper(getattr(lift, "status", None)) not in ("", "OPERATING")
+        if _normalize_upper(getattr(lift, "status", None)) not in ("", "OPERATING")
     ]
 
     lines: list[str] = [
         f"**{area.label} — Lifts • ✅ UPDATED**",
-        f"🕒 {format_timestamp_jst(updated)} • ✅ {operating_count}/{total_lifts} operating",
+        f"🕒 {_format_timestamp_jst(updated)} • ✅ {operating_count}/{total_lifts} operating",
     ]
 
     if non_operating:
         lines.append("")
         lines.append("**Issues:**")
         for lift in non_operating[:10]:
-            name = normalize_text(getattr(lift, "name", None)) or "(unnamed)"
-            status = normalize_text(getattr(lift, "status", None)) or "UNKNOWN"
+            name = _normalize_text(getattr(lift, "name", None)) or "(unnamed)"
+            status = _normalize_text(getattr(lift, "status", None)) or "UNKNOWN"
+            pretty_status = _format_lift_status(status)
             icon = lift_status_icon(status)
-            lines.append(f"- {icon} {name}{lift_time_window(lift)} — `{status}`")
+            lines.append(f"- {icon} {name}{lift_time_window(lift)} — `{pretty_status}`")
 
         if len(non_operating) > 10:
             lines.append(f"...and {len(non_operating) - 10} more")
@@ -176,7 +197,7 @@ def powder_summary(snapshot) -> str:
             reasons: list[str] = []
             if preferred_point.snow_diff_cm is not None and preferred_point.snow_diff_cm > 0:
                 reasons.append(f"Δ+{preferred_point.snow_diff_cm}cm")
-            snow_state = normalize_text(getattr(preferred_point, "snow_state", None))
+            snow_state = _normalize_text(getattr(preferred_point, "snow_state", None))
             if snow_state:
                 reasons.append(snow_state)
 
@@ -210,7 +231,7 @@ def summary_message(snapshot) -> str:
 
         lines.append(
             "\n"
-            f"**{area.label}** • 🕒 {format_timestamp_jst(newest_update)}\n"
+            f"**{area.label}** • 🕒 {_format_timestamp_jst(newest_update)}\n"
             f"- Lifts: ✅ {operating_count}/{total_count}\n"
             f"- Peak: {peak_text}\n"
             f"- Base: {base_text}"
