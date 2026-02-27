@@ -59,6 +59,7 @@ def health():
 
 # --- CRON ENDPOINT ---
 @app.get("/api/cron")
+@app.head("/api/cron")
 async def cron_check(request: Request):
     _require_bearer_auth(request)
 
