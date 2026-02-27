@@ -1,150 +1,92 @@
-import os
-import re
+from __future__ import annotations
+
 import json
-import requests
+import os
+from typing import Optional
+
 import redis
-from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request, Response, HTTPException
-from nacl.signing import VerifyKey
-from nacl.exceptions import BadSignatureError
+
+from liftwatch.snapshot import fetch_snapshot_async
+from liftwatch.ski_area import SkiArea
+from liftwatch.discord import (
+    fmt_weather,
+    fmt_lifts,
+    discord_post,
+    verify_discord_request,
+)
+from liftwatch.fetcher.weather import WeatherPoint, ResortWeather
+from liftwatch.fetcher.facility import LiftFacility
+from liftwatch.formatter import powder_summary, summary_message
 
 app = FastAPI()
 
-DISCORD_PUBLIC_KEY = os.environ.get("DISCORD_PUBLIC_KEY", "")
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 REDIS_URL = os.environ.get("REDIS_URL", "")
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
-LAST_UPDATED_KEY = "liftwatch:last_updated"
-NISEKO_STATUS_URL = "https://www.niseko.ne.jp/en/niseko-lift-status/"
-
-# --- Your Niseko scraping / heuristics ---
-NISEKO_STATUS_URL = "https://www.niseko.ne.jp/en/niseko-lift-status/"
-
-# A pragmatic "powder-ish" lift list you can tune with the boys
-POWDER_LIFTS_KEYWORDS = [
-    "King", "Ace", "Gondola", "Hanazono", "Annupuri", "Village"
-]
-
 # --- Redis connection ---
-r = redis.Redis.from_url(REDIS_URL)
+r = redis.Redis.from_url(REDIS_URL) if REDIS_URL else None
 
-def discord_post(content: str) -> None:
-    if not DISCORD_WEBHOOK_URL:
-        raise RuntimeError("DISCORD_WEBHOOK_URL not set")
-    resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": content}, timeout=10)
-    resp.raise_for_status()
-
-
-def extract_last_updated(html: str) -> str | None:
-    """
-    Try to find 'Last updated' text on the page.
-    We'll refine if needed.
-    """
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"\s+", " ", text)
-
-    m = re.search(r"(Last\s*updated[^.:\n]*[:\s]\s*[^|]+)", text, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-
-    return None
-
-# --- Discord signature verification (required) ---
-def verify_discord_request(raw_body: bytes, signature: str, timestamp: str) -> bool:
-    try:
-        verify_key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
-        verify_key.verify(timestamp.encode() + raw_body, bytes.fromhex(signature))
-        return True
-    except (BadSignatureError, ValueError, TypeError):
-        return False
-
-def fetch_lift_status_text() -> str:
-    """
-    MVP: fetch the official status page and return the visible text.
-    We'll refine parsing later (tables -> structured data).
-    """
-    r = requests.get(NISEKO_STATUS_URL, timeout=15)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-    text = soup.get_text("\n", strip=True)
-    return text
-
-
-def powder_summary() -> str:
-    """
-    Super MVP: look for 'Open' lines / keywords.
-    You'll improve this once you inspect the HTML structure.
-    """
-    text = fetch_lift_status_text()
-
-    # ultra-simple heuristic: if keyword appears near "Open", consider it open.
-    hits = []
-    lower = text.lower()
-
-    for kw in POWDER_LIFTS_KEYWORDS:
-        if kw.lower() in lower:
-            hits.append(kw)
-
-    if not hits:
-        return "😢 I couldn’t detect anything powder-ish from the page text yet. Next step: parse the actual lift table."
-
-    unique = sorted(set(hits))
-    return (
-        "🏂 **Powder-ish quick picks (heuristic):**\n"
-        + " • " + "\n • ".join(unique[:12])
-        + "\n\n(Next: I’ll parse the real lift table so this becomes accurate.)"
-    )
 
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "liftwatch"}
 
+
+def _b2s(x: object) -> Optional[str]:
+    """Redis returns bytes; normalize to str."""
+    if x is None:
+        return None
+    if isinstance(x, (bytes, bytearray)):
+        return x.decode("utf-8", errors="ignore")
+    return str(x)
+
+
+def _is_newer(new: Optional[str], old: Optional[str]) -> bool:
+    if not new:
+        return False
+    if not old:
+        return True
+    return new > old  # ISO timestamps compare lexicographically OK
+
 # --- CRON ENDPOINT ---
 @app.get("/api/cron")
-def cron_check(request: Request):
-
+async def cron_check(request: Request):
     token = request.headers.get("X-Cron-Secret", "")
     if not CRON_SECRET or token != CRON_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    try:
-        resp = requests.get(NISEKO_STATUS_URL, timeout=15)
-        resp.raise_for_status()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Fetch failed: {e}")
+    snap = await fetch_snapshot_async()
 
-    last_updated = extract_last_updated(resp.text)
+    if r is None:
+        raise HTTPException(status_code=500, detail="REDIS_URL not configured")
 
-    if not last_updated:
-        last_updated = "Last updated: (not detected)"
+    for area in SkiArea:
+        # --- LIFTS ---
+        lifts: list[LiftFacility] = snap.lifts_by_area.get(area, [])
+        lifts_updated = max((lf.update_date for lf in lifts if lf.update_date), default=None)
 
-    prev = r.get(LAST_UPDATED_KEY)
-    prev = prev.decode() if prev else None
+        key_l = f"lw:last_posted:lifts:{int(area)}"
+        last_posted_l = _b2s(r.get(key_l))
 
-    # --- If changed → alert ---
-    if prev != last_updated:
-        r.set(LAST_UPDATED_KEY, last_updated)
+        if lifts_updated and _is_newer(lifts_updated, last_posted_l):
+            msg = fmt_lifts(area, lifts, updated=lifts_updated)
+            discord_post(msg)
+            r.set(key_l, lifts_updated)
 
-        message = (
-            "🚨 **Niseko lift status updated**\n"
-            f"{last_updated}\n"
-            f"{NISEKO_STATUS_URL}"
-        )
+        # --- WEATHER ---
+        w: ResortWeather | None = snap.weather_by_area.get(area)
+        weather_updated = w.last_updated if w else None
 
-        discord_post(message)
+        key_w = f"lw:last_posted:weather:{int(area)}"
+        last_posted_w = _b2s(r.get(key_w))
 
-        return {
-            "changed": True,
-            "previous": prev,
-            "current": last_updated
-        }
+        if weather_updated and _is_newer(weather_updated, last_posted_w):
+            msg = fmt_weather(area, w)
+            discord_post(msg)
+            r.set(key_w, weather_updated)
 
-    # --- No change ---
-    return {
-        "changed": False,
-        "current": last_updated
-    }
+    return {"ok": True}
 
 # --- Discord interactions endpoint ---
 @app.post("/api/interactions")
@@ -152,9 +94,6 @@ async def interactions(request: Request):
     raw_body = await request.body()
     signature = request.headers.get("X-Signature-Ed25519", "")
     timestamp = request.headers.get("X-Signature-Timestamp", "")
-
-    if not DISCORD_PUBLIC_KEY:
-        return Response("Server misconfigured: DISCORD_PUBLIC_KEY missing", status_code=500)
 
     if not verify_discord_request(raw_body, signature, timestamp):
         return Response("invalid request signature", status_code=401)
@@ -167,21 +106,21 @@ async def interactions(request: Request):
 
     # Application command
     if payload.get("type") == 2:
-        name = payload["data"]["name"]
+        name = (payload.get("data") or {}).get("name")
+
+        snap = await fetch_snapshot_async()
 
         if name == "powder":
-            msg = powder_summary()
-            return {
-                "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
-                "data": {"content": msg}
-            }
+            msg = powder_summary(snap)
+            return {"type": 4, "data": {"content": msg}}
+
+        if name == "summary":
+            return {"type": 4, "data": {"content": summary_message(snap)}}
 
         if name == "status":
-            return {
-                "type": 4,
-                "data": {"content": "✅ liftwatch is alive. Try `/powder`."}
-            }
+            return {"type": 4, "data": {"content": "✅ liftwatch is alive. Try `/summary` or `/powder`."}}
 
+        # Future: add options like /weather area:HANAZONO
         return {"type": 4, "data": {"content": f"Unknown command: {name}"}}
 
     return {"type": 4, "data": {"content": "Unhandled interaction type."}}
