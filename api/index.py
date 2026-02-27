@@ -9,15 +9,10 @@ from fastapi import FastAPI, Request, Response, HTTPException
 
 from liftwatch.snapshot import fetch_snapshot_async
 from liftwatch.ski_area import SkiArea
-from liftwatch.discord import (
-    fmt_weather,
-    fmt_lifts,
-    discord_post,
-    verify_discord_request,
-)
+from liftwatch.discord import discord_post, verify_discord_request
 from liftwatch.fetcher.weather import WeatherPoint, ResortWeather
 from liftwatch.fetcher.facility import LiftFacility
-from liftwatch.formatter import powder_summary, summary_message
+from liftwatch.formatter import powder_summary, summary_message, fmt_lifts, fmt_weather
 
 app = FastAPI()
 

@@ -83,6 +83,25 @@ def fmt_lifts(area: SkiArea, lifts: List[LiftFacility], *, updated: Optional[str
             lines.append(f"...and {len(not_ok)-12} more")
     return "\n".join(lines)
 
+def fmt_weather(area: SkiArea, w: ResortWeather) -> str:
+    def one(point):
+        if not point:
+            return "n/a"
+        wind = point.wind or "—"
+        wx = point.weather or "—"
+        temp = "—" if point.temperature_c is None else f"{point.temperature_c}°C"
+        snow = "—" if point.snow_cm is None else f"{point.snow_cm}cm"
+        diff = "" if (point.snow_diff_cm is None) else f" (Δ{point.snow_diff_cm}cm)"
+        return f"{temp}, snow {snow}{diff}, wind {wind}, wx {wx}"
+
+    lines = [
+        f"**{area.emoji} {area.label} — Weather update**",
+        f"Updated: `{w.last_updated or 'unknown'}`",
+        f"- Peak: {one(w.peak)}",
+        f"- Base: {one(w.base)}",
+    ]
+    return "\n".join(lines)
+
 def summary_message(snap) -> str:
     """
     One compact overview across all resorts.
