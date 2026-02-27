@@ -56,8 +56,3 @@ async def fetch_weather_snapshot_async() -> Snapshot:
 
     by = {a: w for a, w in zip(SkiArea, res)}
     return Snapshot(weather_by_area=by, lifts_by_area={})
-
-def get_snapshot():
-    return asyncio.run(fetch_weather_snapshot_async())
-
-print(get_snapshot())
