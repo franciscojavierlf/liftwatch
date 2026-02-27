@@ -64,13 +64,13 @@ async def cron_check(request: Request):
 
         # --- LIFTS ---
         lifts: list[LiftFacility] = snap.lifts_by_area.get(area, [])
-        lifts_updated = max((lf.update_date for lf in lifts if lf.update_date), default=None)
+        lifts_updated = max((lift.update_date for lift in lifts if lift.update_date), default=None)
 
         key_l = f"lw:last_posted:lifts:{int(area)}"
         last_posted_l = _b2s(r.get(key_l))
 
         if lifts_updated and _is_newer(lifts_updated, last_posted_l):
-            msg = fmt_lifts(area, lifts, updated=lifts_updated)
+            msg = fmt_lifts(area, lifts, lifts_updated)
             discord_post(msg)
             r.set(key_l, lifts_updated)
             results[area_id]["lifts"] = True

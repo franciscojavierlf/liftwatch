@@ -103,11 +103,10 @@ def format_weather_point_compact(point: WeatherPoint | None) -> str:
     return " • ".join(parts)
 
 
-def fmt_weather(area: SkiArea, resort_weather: ResortWeather, *, updated_iso: str | None) -> str:
-    stamp = updated_iso or resort_weather.last_updated
+def fmt_weather(area: SkiArea, resort_weather: ResortWeather) -> str:
     return "\n".join([
         f"**{area.label} — Weather • ✅ UPDATED**",
-        f"🕒 {format_timestamp_jst(stamp)}",
+        f"🕒 {format_timestamp_jst(resort_weather.last_updated)}",
         f"🏔️ Peak: {format_weather_point_compact(resort_weather.peak)}",
         f"🏡 Base: {format_weather_point_compact(resort_weather.base)}",
     ])
@@ -137,7 +136,7 @@ def lift_time_window(lift: LiftFacility) -> str:
         return f" ({start}-{end})"
     return ""
 
-def fmt_lifts(area: SkiArea, lifts: List[LiftFacility], *, updated_iso: Optional[str]) -> str:
+def fmt_lifts(area: SkiArea, lifts: List[LiftFacility], updated: str | None) -> str:
     total_lifts = len(lifts)
     operating_count = sum(1 for lift in lifts if is_operating(lift))
 
@@ -148,7 +147,7 @@ def fmt_lifts(area: SkiArea, lifts: List[LiftFacility], *, updated_iso: Optional
 
     lines: list[str] = [
         f"**{area.label} — Lifts • ✅ UPDATED**",
-        f"🕒 {format_timestamp_jst(updated_iso)} • ✅ {operating_count}/{total_lifts} operating",
+        f"🕒 {format_timestamp_jst(updated)} • ✅ {operating_count}/{total_lifts} operating",
     ]
 
     if non_operating:
