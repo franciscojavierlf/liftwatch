@@ -57,9 +57,14 @@ def _is_newer(new: Optional[str], old: Optional[str]) -> bool:
 def health():
     return {"ok": True, "service": "liftwatch"}
 
+# Needed for Uptime Robot
+@app.head("/api/cron")
+async def cron_check_head(request: Request):
+    await cron_check(request)
+    return Response(status_code=200)
+
 # --- CRON ENDPOINT ---
 @app.get("/api/cron")
-@app.head("/api/cron")
 async def cron_check(request: Request):
     _require_bearer_auth(request)
 
