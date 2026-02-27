@@ -2,12 +2,7 @@ import os
 import requests
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
-from typing import List, Optional
 from fastapi import Response
-
-from ski_area import SkiArea
-from fetcher.facility import LiftFacility
-from fetcher.weather import ResortWeather
 
 DISCORD_PUBLIC_KEY = os.environ.get("DISCORD_PUBLIC_KEY", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")

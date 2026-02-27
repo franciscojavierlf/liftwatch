@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Literal, Dict, List, Any
 
 import httpx  # you’re using this but it wasn’t imported in your snippet
-from ski_area import SkiArea
+from liftwatch.ski_area import SkiArea
 
 _YUKIYAMA_WEATHER_URL = "https://web-api.yukiyama.biz/web-api/latest-weather/backward"
 

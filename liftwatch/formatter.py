@@ -1,7 +1,7 @@
 from typing import List, Optional
-from ski_area import SkiArea
-from fetcher.facility import LiftFacility
-from fetcher.weather import ResortWeather, WeatherPoint
+from liftwatch.ski_area import SkiArea
+from liftwatch.fetcher.facility import LiftFacility
+from liftwatch.fetcher.weather import ResortWeather, WeatherPoint
 
 POWDER_WORDS = ("パウダー", "新雪", "深雪")
 

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Literal, List, Dict, Any
-import requests
 
-from ski_area import SkiArea
+from liftwatch.ski_area import SkiArea
 
 _YUKIYAMA_FACILITY_URL = "https://web-api.yukiyama.biz/web-api/latest-facility/backward"
 

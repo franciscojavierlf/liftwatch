@@ -6,9 +6,9 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-from ski_area import SkiArea
-from fetcher.facility import LiftFacility, fetch_latest_facility_async
-from fetcher.weather import ResortWeather, fetch_latest_weather_async
+from liftwatch.ski_area import SkiArea
+from liftwatch.fetcher.facility import LiftFacility, fetch_latest_facility_async
+from liftwatch.fetcher.weather import ResortWeather, fetch_latest_weather_async
 
 @dataclass(frozen=True)
 class Snapshot:

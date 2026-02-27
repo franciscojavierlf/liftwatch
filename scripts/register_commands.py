@@ -10,17 +10,25 @@ url = f"https://discord.com/api/v10/applications/{APP_ID}/guilds/{GUILD_ID}/comm
 commands = [
     {
         "name": "powder",
-        "description": "Show powder-ish lift/resort picks right now"
+        "description": "Show resorts with a powder signal (snow_state / fresh snow delta)"
+    },
+    {
+        "name": "summary",
+        "description": "One-shot snapshot: lifts + peak/base weather for all resorts"
     },
     {
         "name": "status",
         "description": "Check if liftwatch is alive"
-    }
+    },
+    # Future ideas:
+    # {"name": "closed", "description": "Show only lifts that are not operating"},
+    # {"name": "alerts", "description": "Show what the cron is watching / last posted timestamps"},
 ]
 
-r = requests.put(
+resp = requests.put(
     url,
     json=commands,
     headers={"Authorization": f"Bot {BOT_TOKEN}"}
 )
-print(r.status_code, r.text)
+
+print(resp.status_code, resp.text)
