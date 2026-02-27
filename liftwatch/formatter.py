@@ -1,24 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Iterable, List, Optional, Sequence
 
 from liftwatch.ski_area import SkiArea
 from liftwatch.fetcher.facility import LiftFacility
 from liftwatch.fetcher.weather import ResortWeather, WeatherPoint
 
-JST = timezone.utc  # placeholder replaced below
-
-
-# ---------- Time formatting (UTC ISO -> JST string) ----------
+JST = timezone(timedelta(hours=9))
 
 def format_timestamp_jst(iso_utc: Optional[str]) -> str:
-    """
-    Convert an ISO8601 timestamp (usually UTC, ends with Z) into JST string.
-    Example output: "2026-02-27 09:08 JST"
-    If parsing fails, returns original string or "unknown".
-    """
     if not iso_utc:
         return "unknown"
 
@@ -26,21 +18,22 @@ def format_timestamp_jst(iso_utc: Optional[str]) -> str:
     if not s:
         return "unknown"
 
-    # Handle "Z" suffix
     try:
+        # Normalize trailing Z -> +00:00 for fromisoformat
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
+
         dt = datetime.fromisoformat(s)
+
+        # If missing tzinfo, assume UTC
         if dt.tzinfo is None:
-            # Assume UTC if timezone missing
             dt = dt.replace(tzinfo=timezone.utc)
 
-        jst = timezone.__new__(timezone, None, 9 * 3600)  # UTC+9 without importing timedelta
-        dt_jst = dt.astimezone(jst)
+        dt_jst = dt.astimezone(JST)
         return dt_jst.strftime("%Y-%m-%d %H:%M JST")
     except Exception:
+        # If it fails, return original to make debugging obvious
         return str(iso_utc)
-
 
 # ---------- Generic cleaning ----------
 
