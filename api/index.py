@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import redis
@@ -22,6 +23,32 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
 # --- Redis connection ---
 r = redis.Redis.from_url(REDIS_URL) if REDIS_URL else None
+
+REDIS_KEY_PAUSED = "lw:cron_paused"
+JST = timezone(timedelta(hours=9))
+CRON_START_HOUR = 5   # 5:00 AM JST
+CRON_END_HOUR = 20    # 8:00 PM JST
+
+
+def _is_paused() -> bool:
+    if r is None:
+        return False
+    val = r.get(REDIS_KEY_PAUSED)
+    return val is not None and val in (b"1", b"true")
+
+
+def _set_paused(paused: bool) -> None:
+    if r is None:
+        raise HTTPException(status_code=500, detail="REDIS_URL not configured")
+    if paused:
+        r.set(REDIS_KEY_PAUSED, "1")
+    else:
+        r.delete(REDIS_KEY_PAUSED)
+
+
+def _is_within_operating_hours() -> bool:
+    now_jst = datetime.now(JST)
+    return CRON_START_HOUR <= now_jst.hour < CRON_END_HOUR
 
 def _require_bearer_auth(request: Request) -> None:
     auth = request.headers.get("Authorization", "")
@@ -55,7 +82,7 @@ def _is_newer(new: Optional[str], old: Optional[str]) -> bool:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "liftwatch"}
+    return {"ok": True, "service": "liftwatch", "paused": _is_paused()}
 
 # Needed for Uptime Robot
 @app.head("/api/cron")
@@ -67,6 +94,13 @@ async def cron_check_head(request: Request):
 @app.get("/api/cron")
 async def cron_check(request: Request):
     _require_bearer_auth(request)
+
+    if _is_paused():
+        return {"ok": True, "skipped": True, "reason": "paused"}
+
+    if not _is_within_operating_hours():
+        now_jst = datetime.now(JST)
+        return {"ok": True, "skipped": True, "reason": f"outside operating hours ({CRON_START_HOUR}:00-{CRON_END_HOUR}:00 JST), current: {now_jst.strftime('%H:%M')} JST"}
 
     snap = await fetch_snapshot_async()
 
@@ -137,7 +171,16 @@ async def interactions(request: Request):
             return {"type": 4, "data": {"content": summary_message(snap)}}
 
         if name == "status":
-            return {"type": 4, "data": {"content": "✅ liftwatch is alive. Try `/summary` or `/powder`."}}
+            paused_label = "⏸️ paused" if _is_paused() else "▶️ running"
+            return {"type": 4, "data": {"content": f"✅ liftwatch is alive ({paused_label}). Try `/summary` or `/powder`."}}
+
+        if name == "pause":
+            _set_paused(True)
+            return {"type": 4, "data": {"content": "⏸️ Cron alerts are now **paused**. Use `/resume` to start them again."}}
+
+        if name == "resume":
+            _set_paused(False)
+            return {"type": 4, "data": {"content": "▶️ Cron alerts are now **running**. Updates will be posted when conditions change."}}
 
         # Future: add options like /weather area:HANAZONO
         return {"type": 4, "data": {"content": f"Unknown command: {name}"}}

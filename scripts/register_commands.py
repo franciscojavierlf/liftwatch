@@ -20,6 +20,14 @@ commands = [
         "name": "status",
         "description": "Check if liftwatch is alive"
     },
+    {
+        "name": "pause",
+        "description": "Pause cron alerts — no more automatic updates until resumed"
+    },
+    {
+        "name": "resume",
+        "description": "Resume cron alerts after pausing"
+    },
     # Future ideas:
     # {"name": "closed", "description": "Show only lifts that are not operating"},
     # {"name": "alerts", "description": "Show what the cron is watching / last posted timestamps"},
