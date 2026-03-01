@@ -2,7 +2,7 @@ name: Register Discord Commands
 
 on:
   push:
-    branches: [master]
+    branches: [develop]
     paths:
       - scripts/register_commands.py
   workflow_dispatch:
