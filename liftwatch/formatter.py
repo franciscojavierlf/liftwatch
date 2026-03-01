@@ -196,19 +196,39 @@ def powder_summary(snapshot) -> str:
         if has_powder_signal(preferred_point):
             reasons: list[str] = []
             if preferred_point.snow_diff_cm is not None and preferred_point.snow_diff_cm > 0:
-                reasons.append(f"Δ+{preferred_point.snow_diff_cm}cm")
+                reasons.append(f"+{preferred_point.snow_diff_cm}cm fresh")
             snow_state = _normalize_text(getattr(preferred_point, "snow_state", None))
             if snow_state:
                 reasons.append(snow_state)
 
-            matches.append((area, preferred_point, " / ".join(reasons) if reasons else "powder signal"))
+            matches.append((area, preferred_point, " · ".join(reasons) if reasons else "powder signal"))
 
     if not matches:
-        return "😢 No clear powder signal right now (no positive snow delta and snow_state doesn’t mention パウダー/新雪/深雪)."
+        return (
+            "🏔️ **Niseko Powder Report**\n"
+            "\n"
+            "No fresh snow detected across Niseko United right now.\n"
+            "Check back later — conditions can change fast!"
+        )
 
-    lines = ["🏂 **Powder-ish right now:**"]
+    lines = [
+        "🏔️ **Niseko Powder Report**",
+        "",
+    ]
     for area, point, why in matches:
-        lines.append(f"- **{area.label}** — {why} — {format_weather_point_compact(point)}")
+        compact = format_weather_point_compact(point)
+        lines.append(f"**{area.label}** — {why}")
+        lines.append(f"  {compact}")
+        lines.append("")
+
+    timestamp = None
+    for _, point, _ in matches:
+        ts = getattr(point, "update_date", None)
+        if ts:
+            timestamp = ts
+            break
+    lines.append(f"_Updated {_format_timestamp_jst(timestamp)}_")
+
     return "\n".join(lines)
 
 
