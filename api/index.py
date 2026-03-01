@@ -10,8 +10,8 @@ from fastapi import FastAPI, Request, Response, HTTPException
 
 from liftwatch.fetcher.fetcher import fetch_snapshot_async
 from liftwatch.ski_area import SkiArea
-from liftwatch.discord import discord_post, verify_discord_request
-from liftwatch.fetcher.weather import WeatherPoint, ResortWeather
+import liftwatch.discord as discord
+from liftwatch.fetcher.weather import ResortWeather
 from liftwatch.fetcher.facility import LiftFacility
 from liftwatch.formatter import powder_summary, summary_message, fmt_lifts, fmt_weather
 
@@ -88,7 +88,7 @@ async def cron_check(request: Request):
 
         if lifts_updated and _is_newer(lifts_updated, last_posted_l):
             msg = fmt_lifts(area, lifts, lifts_updated)
-            discord_post(msg)
+            discord.post_facilities_channel(msg)
             r.set(key_l, lifts_updated)
             results[area_id]["lifts"] = True
 
@@ -101,7 +101,7 @@ async def cron_check(request: Request):
 
         if weather_updated and _is_newer(weather_updated, last_posted_w):
             msg = fmt_weather(area, w)
-            discord_post(msg)
+            discord.post_weather_channel(msg)
             r.set(key_w, weather_updated)
             results[area_id]["weather"] = True
 
@@ -114,7 +114,7 @@ async def interactions(request: Request):
     signature = request.headers.get("X-Signature-Ed25519", "")
     timestamp = request.headers.get("X-Signature-Timestamp", "")
 
-    if not verify_discord_request(raw_body, signature, timestamp):
+    if not discord.verify_request(raw_body, signature, timestamp):
         return Response("invalid request signature", status_code=401)
 
     payload = json.loads(raw_body.decode("utf-8"))
