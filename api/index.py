@@ -14,7 +14,7 @@ from liftwatch.ski_area import SkiArea
 import liftwatch.discord as discord
 from liftwatch.fetcher.weather import ResortWeather
 from liftwatch.fetcher.facility import LiftFacility
-from liftwatch.formatter import powder_summary, summary_message, fmt_lifts, fmt_weather
+from liftwatch.formatter import powder_summary, summary_message, fmt_lift_changes, fmt_weather
 
 app = FastAPI()
 
@@ -80,6 +80,48 @@ def _is_newer(new: Optional[str], old: Optional[str]) -> bool:
         return True
     return new > old  # ISO timestamps compare lexicographically OK
 
+
+# --- Lift change detection ---
+
+_OPEN_STATUSES = {"OPERATING", "STANDBY", "OPERATING_SLOWED"}
+_TEMP_CLOSED_STATUSES = {"OPERATION_TEMPORARILY_SUSPENDED", "SUSPENDED"}
+
+
+def _status_group(status: str) -> str:
+    s = status.strip().upper()
+    if s in _OPEN_STATUSES:
+        return "open"
+    if s in _TEMP_CLOSED_STATUSES:
+        return "temp_closed"
+    return "day_closed"
+
+
+def _lift_state(lifts: list[LiftFacility]) -> dict[str, str]:
+    """Return {facility_id: status} for all lifts."""
+    return {str(lift.facility_id): lift.status for lift in lifts}
+
+
+def _meaningful_changes(
+    lifts: list[LiftFacility], prev: dict[str, str]
+) -> list[tuple[LiftFacility, str]]:
+    """Return (lift, old_status) for each alert-worthy status transition.
+
+    Alert-worthy: open ↔ temp_closed.
+    Ignored: transitions to/from day_closed, or within the same group.
+    """
+    by_id = {str(lift.facility_id): lift for lift in lifts}
+    changes: list[tuple[LiftFacility, str]] = []
+    for fid, lift in by_id.items():
+        old_status = prev.get(fid)
+        if old_status is None or old_status == lift.status:
+            continue
+        old_group = _status_group(old_status)
+        new_group = _status_group(lift.status)
+        if (old_group == "open" and new_group == "temp_closed") or \
+                (old_group == "temp_closed" and new_group == "open"):
+            changes.append((lift, old_status))
+    return changes
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "liftwatch", "paused": _is_paused()}
@@ -115,16 +157,21 @@ async def cron_check(request: Request):
 
         # --- LIFTS ---
         lifts: list[LiftFacility] = snap.lifts_by_area.get(area, [])
-        lifts_updated = max((lift.update_date for lift in lifts if lift.update_date), default=None)
 
-        key_l = f"lw:last_posted:lifts:{int(area)}"
-        last_posted_l = _b2s(r.get(key_l))
+        key_l = f"lw:lift_state:{int(area)}"
+        prev_raw = _b2s(r.get(key_l))
+        prev_state: dict[str, str] = json.loads(prev_raw) if prev_raw else {}
+        curr_state = _lift_state(lifts)
 
-        if lifts_updated and _is_newer(lifts_updated, last_posted_l):
-            msg = fmt_lifts(area, lifts, lifts_updated)
+        changes = _meaningful_changes(lifts, prev_state)
+        if changes:
+            lifts_updated = max((lift.update_date for lift in lifts if lift.update_date), default=None)
+            msg = fmt_lift_changes(area, changes, lifts_updated)
             discord.post_facilities_channel(msg)
-            r.set(key_l, lifts_updated)
             results[area_id]["lifts"] = True
+
+        # Always persist current state so future runs detect transitions correctly
+        r.set(key_l, json.dumps(curr_state))
 
         # --- WEATHER ---
         w: ResortWeather | None = snap.weather_by_area.get(area)

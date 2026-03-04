@@ -85,7 +85,7 @@ def format_weather_point_compact(point: WeatherPoint | None) -> str:
     """
     One-line compact weather representation.
     Example:
-      "-2°C • ❄️ 280cm (Δ+5cm) • 圧雪(固) • 全面可能 • 💨 SE2-5 • ☁️ 曇"
+      "-2°C • ❄️ 280cm (Δ+5cm) • 圧雪(固) • ☁️ 曇"
     """
     if not point:
         return "—"
@@ -99,17 +99,11 @@ def format_weather_point_compact(point: WeatherPoint | None) -> str:
         delta = f" (Δ{sign}{point.snow_diff_cm}cm)"
 
     snow_state = _normalize_text(getattr(point, "snow_state", None))
-    course_state = _normalize_text(getattr(point, "cource_state", None))
-    wind = _normalize_text(getattr(point, "wind", None))
     weather = _normalize_text(getattr(point, "weather", None))
 
     parts: list[str] = [f"{temperature} • ❄️ {snow}{delta}"]
     if snow_state:
         parts.append(snow_state)
-    if course_state:
-        parts.append(course_state)
-    if wind:
-        parts.append(f"💨 {wind}")
     if weather:
         parts.append(f"☁️ {weather}")
 
@@ -119,13 +113,31 @@ def format_weather_point_compact(point: WeatherPoint | None) -> str:
 def fmt_weather(area: SkiArea, resort_weather: ResortWeather) -> str:
     return "\n".join([
         f"**{area.label} — Weather • ✅ UPDATED**",
-        f"🕒 {_format_timestamp_jst(resort_weather.last_updated)}",
         f"🏔️ Peak: {format_weather_point_compact(resort_weather.peak)}",
         f"🏡 Base: {format_weather_point_compact(resort_weather.base)}",
+        f"🕒 {_format_timestamp_jst(resort_weather.last_updated)}",
     ])
 
 
 # ---------- Lift formatting ----------
+
+def fmt_lift_changes(
+    area: SkiArea,
+    changes: list[tuple[LiftFacility, str]],
+    updated: str | None,
+) -> str:
+    """Format an alert message for meaningful lift status transitions."""
+    lines: list[str] = [f"**{area.label} — Lift Alert**", ""]
+    for lift, old_status in changes:
+        name = _normalize_text(lift.name) or "(unnamed)"
+        old_pretty = _format_lift_status(old_status)
+        new_pretty = _format_lift_status(lift.status)
+        icon = lift_status_icon(lift.status)
+        lines.append(f"- {icon} **{name}**: {old_pretty} → {new_pretty}")
+    lines.append(f"\n🕒 {_format_timestamp_jst(updated)}")
+    return "\n".join(lines)
+
+
 
 def lift_status_icon(status: object) -> str:
     s = _normalize_upper(status)
