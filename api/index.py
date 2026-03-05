@@ -96,31 +96,66 @@ def _status_group(status: str) -> str:
     return "day_closed"
 
 
-def _lift_state(lifts: list[LiftFacility]) -> dict[str, str]:
-    """Return {facility_id: status} for all lifts."""
-    return {str(lift.facility_id): lift.status for lift in lifts}
+LiftEntry = dict[str, object]  # {"status": str, "was_suspended": bool}
 
 
-def _meaningful_changes(
-    lifts: list[LiftFacility], prev: dict[str, str]
-) -> list[tuple[LiftFacility, str]]:
-    """Return (lift, old_status) for each alert-worthy status transition.
+def _normalize_prev_state(raw: dict) -> dict[str, LiftEntry]:
+    """Normalize Redis state to the current schema, handling the old str-only format."""
+    result: dict[str, LiftEntry] = {}
+    for fid, entry in raw.items():
+        if isinstance(entry, str):
+            result[fid] = {"status": entry, "was_suspended": False}
+        else:
+            result[fid] = entry
+    return result
 
-    Alert-worthy: open ↔ temp_closed.
-    Ignored: transitions to/from day_closed, or within the same group.
+
+def _process_lift_changes(
+    lifts: list[LiftFacility],
+    prev: dict[str, LiftEntry],
+) -> tuple[list[tuple[LiftFacility, str]], dict[str, LiftEntry]]:
+    """Compute alert-worthy changes and the new state to persist.
+
+    Alert-worthy transitions:
+      - open → temp_closed  (unexpected mid-day suspension)
+      - temp_closed → open  (lift recovered)
+      - day_closed → open   when was_suspended=True (didn't recover before day-end)
+
+    The was_suspended flag is set whenever a lift enters temp_closed and carried
+    through a day_closed so we catch the next-morning re-open.
     """
     by_id = {str(lift.facility_id): lift for lift in lifts}
     changes: list[tuple[LiftFacility, str]] = []
+    new_state: dict[str, LiftEntry] = {}
+
     for fid, lift in by_id.items():
-        old_status = prev.get(fid)
+        prev_entry = prev.get(fid, {})
+        old_status: str | None = prev_entry.get("status")  # type: ignore[assignment]
+        was_suspended: bool = bool(prev_entry.get("was_suspended", False))
+
+        old_group = _status_group(old_status) if old_status else None
+        new_group = _status_group(lift.status)
+
+        # Maintain the was_suspended flag across state transitions
+        if new_group == "open":
+            new_was_suspended = False
+        elif new_group == "temp_closed":
+            new_was_suspended = True
+        else:  # day_closed — carry the flag forward
+            new_was_suspended = was_suspended or (old_group == "temp_closed")
+
+        new_state[fid] = {"status": lift.status, "was_suspended": new_was_suspended}
+
         if old_status is None or old_status == lift.status:
             continue
-        old_group = _status_group(old_status)
-        new_group = _status_group(lift.status)
+
         if (old_group == "open" and new_group == "temp_closed") or \
                 (old_group == "temp_closed" and new_group == "open"):
             changes.append((lift, old_status))
-    return changes
+        elif old_group == "day_closed" and new_group == "open" and was_suspended:
+            changes.append((lift, old_status))
+
+    return changes, new_state
 
 @app.get("/api/health")
 def health():
@@ -160,10 +195,9 @@ async def cron_check(request: Request):
 
         key_l = f"lw:lift_state:{int(area)}"
         prev_raw = _b2s(r.get(key_l))
-        prev_state: dict[str, str] = json.loads(prev_raw) if prev_raw else {}
-        curr_state = _lift_state(lifts)
+        prev_state = _normalize_prev_state(json.loads(prev_raw) if prev_raw else {})
 
-        changes = _meaningful_changes(lifts, prev_state)
+        changes, new_state = _process_lift_changes(lifts, prev_state)
         if changes:
             lifts_updated = max((lift.update_date for lift in lifts if lift.update_date), default=None)
             msg = fmt_lift_changes(area, changes, lifts_updated)
@@ -171,7 +205,7 @@ async def cron_check(request: Request):
             results[area_id]["lifts"] = True
 
         # Always persist current state so future runs detect transitions correctly
-        r.set(key_l, json.dumps(curr_state))
+        r.set(key_l, json.dumps(new_state))
 
         # --- WEATHER ---
         w: ResortWeather | None = snap.weather_by_area.get(area)
