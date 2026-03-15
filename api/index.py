@@ -14,7 +14,7 @@ from liftwatch.ski_area import SkiArea
 import liftwatch.discord as discord
 from liftwatch.fetcher.weather import ResortWeather
 from liftwatch.fetcher.facility import LiftFacility
-from liftwatch.formatter import powder_summary, summary_message, fmt_lift_changes, fmt_weather
+from liftwatch.formatter import powder_summary, summary_message, fmt_lift_mass_suspension, fmt_lift_recovery, fmt_weather
 
 app = FastAPI()
 
@@ -26,8 +26,9 @@ r = redis.Redis.from_url(REDIS_URL) if REDIS_URL else None
 
 REDIS_KEY_PAUSED = "lw:cron_paused"
 JST = timezone(timedelta(hours=9))
-CRON_START_HOUR = 5   # 5:00 AM JST
-CRON_END_HOUR = 20    # 8:00 PM JST
+CRON_START_HOUR = 5    # 5:00 AM JST
+CRON_END_HOUR = 20     # 8:00 PM JST
+WEATHER_END_HOUR = 12  # 12:00 PM JST — weather alerts only posted 5 AM–12 PM
 
 
 def _is_paused() -> bool:
@@ -49,6 +50,21 @@ def _set_paused(paused: bool) -> None:
 def _is_within_operating_hours() -> bool:
     now_jst = datetime.now(JST)
     return CRON_START_HOUR <= now_jst.hour < CRON_END_HOUR
+
+
+def _is_within_weather_hours() -> bool:
+    now_jst = datetime.now(JST)
+    return CRON_START_HOUR <= now_jst.hour < WEATHER_END_HOUR
+
+
+def _snow_sig(w: ResortWeather) -> tuple:
+    """Return the fields we care about for change detection (snow delta + snow type)."""
+    return (
+        w.peak.snow_diff_cm if w.peak else None,
+        w.peak.snow_state   if w.peak else None,
+        w.base.snow_diff_cm if w.base else None,
+        w.base.snow_state   if w.base else None,
+    )
 
 def _require_bearer_auth(request: Request) -> None:
     auth = request.headers.get("Authorization", "")
@@ -79,83 +95,6 @@ def _is_newer(new: Optional[str], old: Optional[str]) -> bool:
     if not old:
         return True
     return new > old  # ISO timestamps compare lexicographically OK
-
-
-# --- Lift change detection ---
-
-_OPEN_STATUSES = {"OPERATING", "STANDBY", "OPERATING_SLOWED"}
-_TEMP_CLOSED_STATUSES = {"OPERATION_TEMPORARILY_SUSPENDED", "SUSPENDED"}
-
-
-def _status_group(status: str) -> str:
-    s = status.strip().upper()
-    if s in _OPEN_STATUSES:
-        return "open"
-    if s in _TEMP_CLOSED_STATUSES:
-        return "temp_closed"
-    return "day_closed"
-
-
-LiftEntry = dict[str, object]  # {"status": str, "was_suspended": bool}
-
-
-def _normalize_prev_state(raw: dict) -> dict[str, LiftEntry]:
-    """Normalize Redis state to the current schema, handling the old str-only format."""
-    result: dict[str, LiftEntry] = {}
-    for fid, entry in raw.items():
-        if isinstance(entry, str):
-            result[fid] = {"status": entry, "was_suspended": False}
-        else:
-            result[fid] = entry
-    return result
-
-
-def _process_lift_changes(
-    lifts: list[LiftFacility],
-    prev: dict[str, LiftEntry],
-) -> tuple[list[tuple[LiftFacility, str]], dict[str, LiftEntry]]:
-    """Compute alert-worthy changes and the new state to persist.
-
-    Alert-worthy transitions:
-      - open → temp_closed  (unexpected mid-day suspension)
-      - temp_closed → open  (lift recovered)
-      - day_closed → open   when was_suspended=True (didn't recover before day-end)
-
-    The was_suspended flag is set whenever a lift enters temp_closed and carried
-    through a day_closed so we catch the next-morning re-open.
-    """
-    by_id = {str(lift.facility_id): lift for lift in lifts}
-    changes: list[tuple[LiftFacility, str]] = []
-    new_state: dict[str, LiftEntry] = {}
-
-    for fid, lift in by_id.items():
-        prev_entry = prev.get(fid, {})
-        old_status: str | None = prev_entry.get("status")  # type: ignore[assignment]
-        was_suspended: bool = bool(prev_entry.get("was_suspended", False))
-
-        old_group = _status_group(old_status) if old_status else None
-        new_group = _status_group(lift.status)
-
-        # Maintain the was_suspended flag across state transitions
-        if new_group == "open":
-            new_was_suspended = False
-        elif new_group == "temp_closed":
-            new_was_suspended = True
-        else:  # day_closed — carry the flag forward
-            new_was_suspended = was_suspended or (old_group == "temp_closed")
-
-        new_state[fid] = {"status": lift.status, "was_suspended": new_was_suspended}
-
-        if old_status is None or old_status == lift.status:
-            continue
-
-        if (old_group == "open" and new_group == "temp_closed") or \
-                (old_group == "temp_closed" and new_group == "open"):
-            changes.append((lift, old_status))
-        elif old_group == "day_closed" and new_group == "open" and was_suspended:
-            changes.append((lift, old_status))
-
-    return changes, new_state
 
 @app.get("/api/health")
 def health():
@@ -191,34 +130,74 @@ async def cron_check(request: Request):
         results[area_id] = {"lifts": False, "weather": False}
 
         # --- LIFTS ---
+        # Alert only when a majority (>50%) of lifts are temporarily suspended
+        # (wind hold), and again when they recover.
         lifts: list[LiftFacility] = snap.lifts_by_area.get(area, [])
 
-        key_l = f"lw:lift_state:{int(area)}"
-        prev_raw = _b2s(r.get(key_l))
-        prev_state = _normalize_prev_state(json.loads(prev_raw) if prev_raw else {})
+        if lifts:
+            suspended_count = sum(
+                1 for lift in lifts
+                if lift.status.strip().upper() in {"OPERATION_TEMPORARILY_SUSPENDED", "SUSPENDED"}
+            )
+            majority_suspended = suspended_count / len(lifts) > 0.5
 
-        changes, new_state = _process_lift_changes(lifts, prev_state)
-        if changes:
-            lifts_updated = max((lift.update_date for lift in lifts if lift.update_date), default=None)
-            msg = fmt_lift_changes(area, changes, lifts_updated)
-            discord.post_facilities_channel(msg)
-            results[area_id]["lifts"] = True
+            key_la = f"lw:lift_alert_state:{int(area)}"
+            raw_la = _b2s(r.get(key_la))
+            alert_state: dict = json.loads(raw_la) if raw_la else {}
 
-        # Always persist current state so future runs detect transitions correctly
-        r.set(key_l, json.dumps(new_state))
+            today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+            if alert_state.get("date") != today_jst:
+                alert_state = {"date": today_jst, "alerted_suspended": False}
+
+            alerted = alert_state.get("alerted_suspended", False)
+            lift_msg: str | None = None
+
+            if majority_suspended and not alerted:
+                lift_msg = fmt_lift_mass_suspension(area, lifts, suspended_count)
+                alert_state["alerted_suspended"] = True
+                results[area_id]["lifts"] = True
+            elif not majority_suspended and alerted:
+                lift_msg = fmt_lift_recovery(area, lifts)
+                alert_state["alerted_suspended"] = False
+                results[area_id]["lifts"] = True
+
+            if lift_msg:
+                discord.post_facilities_channel(lift_msg)
+
+            r.set(key_la, json.dumps(alert_state))
 
         # --- WEATHER ---
         w: ResortWeather | None = snap.weather_by_area.get(area)
-        weather_updated = w.last_updated if w else None
 
-        key_w = f"lw:last_posted:weather:{int(area)}"
-        last_posted_w = _b2s(r.get(key_w))
+        if w and w.last_updated and _is_within_weather_hours():
+            key_snap = f"lw:last_weather_snapshot:{int(area)}"
+            raw_snap = _b2s(r.get(key_snap))
+            stored: dict = json.loads(raw_snap) if raw_snap else {}
 
-        if weather_updated and _is_newer(weather_updated, last_posted_w):
-            msg = fmt_weather(area, w)
-            discord.post_weather_channel(msg)
-            r.set(key_w, weather_updated)
-            results[area_id]["weather"] = True
+            if _is_newer(w.last_updated, stored.get("last_seen")):
+                today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+                first_of_day = stored.get("posted_date") != today_jst
+                snow_changed = _snow_sig(w) != (
+                    stored.get("peak_snow_diff"),
+                    stored.get("peak_snow_state"),
+                    stored.get("base_snow_diff"),
+                    stored.get("base_snow_state"),
+                )
+
+                if first_of_day or snow_changed:
+                    msg = fmt_weather(area, w)
+                    discord.post_weather_channel(msg)
+                    stored.update({
+                        "posted_date":    today_jst,
+                        "peak_snow_diff": w.peak.snow_diff_cm if w.peak else None,
+                        "peak_snow_state": w.peak.snow_state  if w.peak else None,
+                        "base_snow_diff": w.base.snow_diff_cm if w.base else None,
+                        "base_snow_state": w.base.snow_state  if w.base else None,
+                    })
+                    results[area_id]["weather"] = True
+
+                stored["last_seen"] = w.last_updated
+                r.set(key_snap, json.dumps(stored))
 
     return {"ok": True, "updated": results}
 
