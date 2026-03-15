@@ -26,8 +26,9 @@ r = redis.Redis.from_url(REDIS_URL) if REDIS_URL else None
 
 REDIS_KEY_PAUSED = "lw:cron_paused"
 JST = timezone(timedelta(hours=9))
-CRON_START_HOUR = 5   # 5:00 AM JST
-CRON_END_HOUR = 20    # 8:00 PM JST
+CRON_START_HOUR = 5    # 5:00 AM JST
+CRON_END_HOUR = 20     # 8:00 PM JST
+WEATHER_END_HOUR = 9   # 9:00 AM JST — weather alerts only posted 5–9 AM
 
 
 def _is_paused() -> bool:
@@ -49,6 +50,11 @@ def _set_paused(paused: bool) -> None:
 def _is_within_operating_hours() -> bool:
     now_jst = datetime.now(JST)
     return CRON_START_HOUR <= now_jst.hour < CRON_END_HOUR
+
+
+def _is_within_weather_hours() -> bool:
+    now_jst = datetime.now(JST)
+    return CRON_START_HOUR <= now_jst.hour < WEATHER_END_HOUR
 
 def _require_bearer_auth(request: Request) -> None:
     auth = request.headers.get("Authorization", "")
@@ -214,7 +220,7 @@ async def cron_check(request: Request):
         key_w = f"lw:last_posted:weather:{int(area)}"
         last_posted_w = _b2s(r.get(key_w))
 
-        if weather_updated and _is_newer(weather_updated, last_posted_w):
+        if weather_updated and _is_newer(weather_updated, last_posted_w) and _is_within_weather_hours():
             msg = fmt_weather(area, w)
             discord.post_weather_channel(msg)
             r.set(key_w, weather_updated)
