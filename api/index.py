@@ -28,7 +28,7 @@ REDIS_KEY_PAUSED = "lw:cron_paused"
 JST = timezone(timedelta(hours=9))
 CRON_START_HOUR = 5    # 5:00 AM JST
 CRON_END_HOUR = 20     # 8:00 PM JST
-WEATHER_END_HOUR = 9   # 9:00 AM JST — weather alerts only posted 5–9 AM
+WEATHER_END_HOUR = 12  # 12:00 PM JST — weather alerts only posted 5 AM–12 PM
 
 
 def _is_paused() -> bool:
@@ -55,6 +55,16 @@ def _is_within_operating_hours() -> bool:
 def _is_within_weather_hours() -> bool:
     now_jst = datetime.now(JST)
     return CRON_START_HOUR <= now_jst.hour < WEATHER_END_HOUR
+
+
+def _snow_sig(w: ResortWeather) -> tuple:
+    """Return the fields we care about for change detection (snow delta + snow type)."""
+    return (
+        w.peak.snow_diff_cm if w.peak else None,
+        w.peak.snow_state   if w.peak else None,
+        w.base.snow_diff_cm if w.base else None,
+        w.base.snow_state   if w.base else None,
+    )
 
 def _require_bearer_auth(request: Request) -> None:
     auth = request.headers.get("Authorization", "")
@@ -215,16 +225,36 @@ async def cron_check(request: Request):
 
         # --- WEATHER ---
         w: ResortWeather | None = snap.weather_by_area.get(area)
-        weather_updated = w.last_updated if w else None
 
-        key_w = f"lw:last_posted:weather:{int(area)}"
-        last_posted_w = _b2s(r.get(key_w))
+        if w and w.last_updated and _is_within_weather_hours():
+            key_snap = f"lw:last_weather_snapshot:{int(area)}"
+            raw_snap = _b2s(r.get(key_snap))
+            stored: dict = json.loads(raw_snap) if raw_snap else {}
 
-        if weather_updated and _is_newer(weather_updated, last_posted_w) and _is_within_weather_hours():
-            msg = fmt_weather(area, w)
-            discord.post_weather_channel(msg)
-            r.set(key_w, weather_updated)
-            results[area_id]["weather"] = True
+            if _is_newer(w.last_updated, stored.get("last_seen")):
+                today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+                first_of_day = stored.get("posted_date") != today_jst
+                snow_changed = _snow_sig(w) != (
+                    stored.get("peak_snow_diff"),
+                    stored.get("peak_snow_state"),
+                    stored.get("base_snow_diff"),
+                    stored.get("base_snow_state"),
+                )
+
+                if first_of_day or snow_changed:
+                    msg = fmt_weather(area, w)
+                    discord.post_weather_channel(msg)
+                    stored.update({
+                        "posted_date":    today_jst,
+                        "peak_snow_diff": w.peak.snow_diff_cm if w.peak else None,
+                        "peak_snow_state": w.peak.snow_state  if w.peak else None,
+                        "base_snow_diff": w.base.snow_diff_cm if w.base else None,
+                        "base_snow_state": w.base.snow_state  if w.base else None,
+                    })
+                    results[area_id]["weather"] = True
+
+                stored["last_seen"] = w.last_updated
+                r.set(key_snap, json.dumps(stored))
 
     return {"ok": True, "updated": results}
 
