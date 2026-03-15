@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional
 
 from liftwatch.ski_area import SkiArea
 from liftwatch.fetcher.facility import LiftFacility
@@ -10,25 +9,6 @@ from liftwatch.fetcher.weather import ResortWeather, WeatherPoint
 
 JST = timezone(timedelta(hours=9))
 
-STATUS_DISPLAY: dict[str, tuple[str, str]] = {
-    "OPERATING": ("✅", "Operating"),
-    "OPERATING_SLOWED": ("🐢", "Operating (slow)"),
-    "STANDBY": ("⏳", "Standby"),
-    "OPERATION_TEMPORARILY_SUSPENDED": ("⛔", "Temporarily suspended"),
-    "SUSPENDED": ("❌", "Suspended"),
-    "SUSPENDED_CLOSED": ("❌", "Closed"),
-    "CLOSED": ("❌", "Closed"),
-}
-
-def _format_lift_status(raw_status: object) -> str:
-    status = str(raw_status or "").strip().upper()
-
-    icon, text = STATUS_DISPLAY.get(
-        status,
-        ("⚠️", status.replace("_", " ").title())  # fallback
-    )
-
-    return f"{icon} {text}"
 
 def _format_timestamp_jst(iso_utc: Optional[str]) -> str:
     if not iso_utc:
@@ -121,73 +101,36 @@ def fmt_weather(area: SkiArea, resort_weather: ResortWeather) -> str:
 
 # ---------- Lift formatting ----------
 
-def fmt_lift_changes(
-    area: SkiArea,
-    changes: list[tuple[LiftFacility, str]],
-    updated: str | None,
-) -> str:
-    """Format an alert message for meaningful lift status transitions."""
-    lines: list[str] = [f"**{area.label} — Lift Alert**", ""]
-    for lift, old_status in changes:
-        name = _normalize_text(lift.name) or "(unnamed)"
-        old_pretty = _format_lift_status(old_status)
-        new_pretty = _format_lift_status(lift.status)
-        icon = lift_status_icon(lift.status)
-        lines.append(f"- {icon} **{name}**: {old_pretty} → {new_pretty}")
-    lines.append(f"\n🕒 {_format_timestamp_jst(updated)}")
-    return "\n".join(lines)
+_SUSPENDED_STATUSES = {"OPERATION_TEMPORARILY_SUSPENDED", "SUSPENDED"}
 
-
-
-def lift_status_icon(status: object) -> str:
-    s = _normalize_upper(status)
-    if s == "OPERATING":
-        return "✅"
-    if "SUSPEND" in s:
-        return "⛔"
-    if "STANDBY" in s:
-        return "⏳"
-    if "SLOW" in s:
-        return "🐢"
-    return "⚠️"
 
 def is_operating(lift: LiftFacility) -> bool:
     return _normalize_upper(getattr(lift, "status", None)) == "OPERATING"
 
-def lift_time_window(lift: LiftFacility) -> str:
-    start = _normalize_text(getattr(lift, "start_time", None))
-    end = _normalize_text(getattr(lift, "end_time", None))
-    if start and end:
-        return f" ({start}-{end})"
-    return ""
 
-def fmt_lifts(area: SkiArea, lifts: List[LiftFacility], updated: str | None) -> str:
-    total_lifts = len(lifts)
-    operating_count = sum(1 for lift in lifts if is_operating(lift))
-
-    non_operating = [
-        lift for lift in lifts
-        if _normalize_upper(getattr(lift, "status", None)) not in ("", "OPERATING")
+def fmt_lift_mass_suspension(area: SkiArea, lifts: List[LiftFacility], suspended_count: int) -> str:
+    pct = int(suspended_count / len(lifts) * 100)
+    suspended = [l for l in lifts if l.status.strip().upper() in _SUSPENDED_STATUSES]
+    lines = [
+        f"**{area.label} — ⛔ Wind Hold**",
+        f"{suspended_count}/{len(lifts)} lifts suspended ({pct}%) — likely wind hold.",
+        "",
     ]
+    for lift in suspended:
+        lines.append(f"- ⛔ {_normalize_text(lift.name)}")
+    updated = max((l.update_date for l in lifts if l.update_date), default=None)
+    lines.append(f"\n🕒 {_format_timestamp_jst(updated)}")
+    return "\n".join(lines)
 
-    lines: list[str] = [
-        f"**{area.label} — Lifts • ✅ UPDATED**",
-        f"🕒 {_format_timestamp_jst(updated)} • ✅ {operating_count}/{total_lifts} operating",
+
+def fmt_lift_recovery(area: SkiArea, lifts: List[LiftFacility]) -> str:
+    operating_count = sum(1 for l in lifts if is_operating(l))
+    lines = [
+        f"**{area.label} — ✅ Wind Hold Lifted**",
+        f"{operating_count}/{len(lifts)} lifts now operating.",
     ]
-
-    if non_operating:
-        lines.append("")
-        lines.append("**Issues:**")
-        for lift in non_operating[:10]:
-            name = _normalize_text(getattr(lift, "name", None)) or "(unnamed)"
-            status = _normalize_text(getattr(lift, "status", None)) or "UNKNOWN"
-            pretty_status = _format_lift_status(status)
-            icon = lift_status_icon(status)
-            lines.append(f"- {icon} {name}{lift_time_window(lift)} — `{pretty_status}`")
-
-        if len(non_operating) > 10:
-            lines.append(f"...and {len(non_operating) - 10} more")
-
+    updated = max((l.update_date for l in lifts if l.update_date), default=None)
+    lines.append(f"🕒 {_format_timestamp_jst(updated)}")
     return "\n".join(lines)
 
 
