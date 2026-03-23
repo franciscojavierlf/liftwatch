@@ -125,9 +125,13 @@ def fmt_lift_mass_suspension(area: SkiArea, lifts: List[LiftFacility], suspended
 
 def fmt_lift_recovery(area: SkiArea, lifts: List[LiftFacility]) -> str:
     operating_count = sum(1 for l in lifts if is_operating(l))
+    released_count = sum(
+        1 for l in lifts
+        if _normalize_upper(getattr(l, "status", None)) not in _SUSPENDED_STATUSES
+    )
     lines = [
         f"**{area.label} — ✅ Wind Hold Lifted**",
-        f"{operating_count}/{len(lifts)} lifts now operating.",
+        f"{released_count}/{len(lifts)} lifts released from wind hold, {operating_count} now operating.",
     ]
     updated = max((l.update_date for l in lifts if l.update_date), default=None)
     lines.append(f"🕒 {_format_timestamp_jst(updated)}")
